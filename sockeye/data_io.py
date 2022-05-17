@@ -1917,6 +1917,10 @@ class Batch:
         labels = {name: label.to(device) for name, label in self.labels.items()}
         return Batch(source, source_length, target, target_length, labels, self.samples, self.tokens)
 
+    def get_model_engine_inputs(self) -> \
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+        return (self.source, self.source_length, self.target, self.target_length, self.labels)
+
 
 def create_target_and_shifted_label_sequences(target_and_label: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """

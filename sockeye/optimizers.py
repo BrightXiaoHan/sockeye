@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 class OptimizerConfig(config.Config):
     # Optimizer
     name: str
-    running_on_gpu: bool = False
 
     # Adam default values
     lr: float = 0.001
@@ -47,40 +46,19 @@ class OptimizerConfig(config.Config):
     lr_scheduler: Optional[LearningRateScheduler] = None
 
 
-def get_optimizer(model: torch.nn.Module, config: OptimizerConfig) -> Tuple[torch.optim.Optimizer, Dict[str, Any]]:
+def get_optimizer(model: torch.nn.Module, config: OptimizerConfig) -> torch.optim.Optimizer:
     """
     Create an optimizer for a Sockeye model using the specified config settings.
 
     :param model: Sockeye model.
     :param config: Optimizer config.
 
-    :return: Tuple of an Optimizer and the kwargs dict for calling that
-             optimizer's `zero_grad()` method.
+    :return: Optimizer.
     """
-    adam_impl = torch.optim.Adam
-    sgd_impl = torch.optim.SGD
-    # Built-in optimizers take the "set_to_none" argument. See:
-    # https://pytorch.org/tutorials/recipes/recipes/tuning_guide.html
-    zero_grad_kwargs = {'set_to_none': True}
-
-    if config.running_on_gpu:
-        try:
-            from apex.optimizers import FusedAdam, FusedSGD
-            adam_impl = FusedAdam
-            sgd_impl = FusedSGD
-            # Apex optimizers automatically set gradients to none instead of
-            # zeroing and do not have a "set_to_none" argument. See:
-            # https://nvidia.github.io/apex/optimizers.html
-            zero_grad_kwargs = {}
-            logging.info('Using NVIDIA Apex fused optimizers')
-        except ImportError:
-            logger.warning('Cannot import NVIDIA Apex optimizers (FusedAdam, FusedSGD). Consider installing Apex for '
-                           'faster GPU training: https://github.com/NVIDIA/apex')
-
     if config.name == C.OPTIMIZER_ADAM:
-        return adam_impl(model.parameters(), lr=config.lr, betas=config.betas, eps=config.eps,
-                         weight_decay=config.weight_decay), zero_grad_kwargs
+        return torch.optim.Adam(model.parameters(), lr=config.lr, betas=config.betas, eps=config.eps,
+                                weight_decay=config.weight_decay)
     elif config.name == C.OPTIMIZER_SGD:
-        return sgd_impl(model.parameters(), lr=config.lr, momentum=config.momentum,
-                        weight_decay=config.weight_decay), zero_grad_kwargs
+        return torch.optim.SGD(model.parameters(), lr=config.lr, momentum=config.momentum,
+                               weight_decay=config.weight_decay)
     raise ValueError(f'Unknown optimizer: {config.name}')

@@ -27,6 +27,7 @@ import sys
 import tempfile
 from typing import cast, Callable, Optional, Dict, List, Tuple
 
+import deepspeed
 import torch
 import torch.distributed
 import torch.distributed.elastic.multiprocessing.errors
@@ -764,7 +765,6 @@ def create_optimizer_config(args: argparse.Namespace) -> optimizers.OptimizerCon
                                              args.max_updates)
 
     config = optimizers.OptimizerConfig(name=args.optimizer,
-                                        running_on_gpu=not args.use_cpu,
                                         lr=args.initial_learning_rate,
                                         betas=args.optimizer_betas,
                                         eps=args.optimizer_eps,
@@ -870,8 +870,7 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
     """
 
     if args.dist:
-        torch.distributed.init_process_group(torch.distributed.Backend.GLOO if args.use_cpu
-                                             else torch.distributed.Backend.NCCL)
+        deepspeed.init_distributed(dist_backend='gloo' if args.use_cpu else 'nccl')
 
     if args.dry_run:
         # Modify arguments so that we write to a temporary directory and
@@ -991,7 +990,6 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
     sockeye_model = model.SockeyeModel(
         model_config,
         train_decoder_only=args.fixed_param_strategy == C.FIXED_PARAM_STRATEGY_ALL_EXCEPT_DECODER)
-    sockeye_model.to(device)
     sockeye_model.apply(model.initialize_parameters)
 
     # Load starting parameters if specified
@@ -1005,59 +1003,44 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
                                          params=dict(sockeye_model.named_parameters()),
                                          fixed_param_names=args.fixed_param_names,
                                          fixed_param_strategy=args.fixed_param_strategy)
-
     utils.log_parameters(sockeye_model)
 
-    optimizer, zero_grad_kwargs = optimizers.get_optimizer(sockeye_model, optimizer_config)
+    losses = create_losses(args, all_num_classes=target_vocab_sizes)
+    model_engine = training.ModelEngine(model=sockeye_model, losses=losses)
 
-    # This starts as a reference to the original Sockeye model. It is
-    # sequentially transformed/wrapped to produce the model instance used for
-    # training.
-    training_model = sockeye_model  # type: torch.nn.Module
-
-    if args.apex_amp:
-        try:
-            import apex.amp
-        except ImportError:
-            logger.error('Cannot import NVIDIA Apex AMP. Please install Apex: https://github.com/NVIDIA/apex')
-            sys.exit(1)
-        # Optimization level 2 runs the entire model in FP16 mode with FP32
-        # master weights and loss scaling. See:
-        # https://nvidia.github.io/apex/amp.html#o2-almost-fp16-mixed-precision
-        training_model, optimizer = apex.amp.initialize(training_model, optimizer, opt_level='O2')
-
-    logger.info('Tracing model on a validation batch')
+    logger.info('Tracing model engine on a validation batch')
     batch = eval_iter.next().load(device=device)  # pylint: disable=not-callable
-    # When using AMP, turn on autocasting when tracing the model so that
-    # dtypes will match during AMP training. Disable the weight cache for
-    # compatibility with tracing. See:
-    # https://github.com/pytorch/pytorch/pull/63552
-    with torch.cuda.amp.autocast(cache_enabled=False) if args.amp else utils.no_context():  # type: ignore
-        training_model = torch.jit.trace(training_model, (batch.source, batch.source_length,
-                                                          batch.target, batch.target_length), strict=False)
+    model_engine = torch.jit.trace(model_engine, batch.get_model_engine_inputs(), strict=False, check_trace=False)
     eval_iter.reset()
 
     if utils.is_distributed():
-        # In distributed mode, wrap the traced model with a distributed
-        # data-parallel model that shares (averages) gradients with models
-        # in other worker processes.
-        training_model = torch.nn.parallel.DistributedDataParallel(training_model,
-                                                                   device_ids=None if args.use_cpu else [device],
-                                                                   output_device=None if args.use_cpu else device)
-
-    losses = create_losses(args, all_num_classes=target_vocab_sizes)
+        ds_config = {
+            'train_micro_batch_size_per_gpu': args.batch_size,
+            'gradient_accumulation_steps': args.update_interval,
+            'optimizer': {
+                'type': 'Adam',
+                'params': {
+                    'lr': args.initial_learning_rate,
+                    'betas': args.optimizer_betas,
+                    'eps': args.optimizer_eps,
+                },
+            },
+        }
+        model_engine, optimizer, _, _ = deepspeed.initialize(model=model_engine,
+                                                             model_parameters=sockeye_model.parameters(),
+                                                             lr_scheduler=lambda _: optimizer_config.lr_scheduler,
+                                                             config=ds_config)
+    else:
+        optimizer = optimizers.get_optimizer(sockeye_model, optimizer_config)
 
     trainer = training.EarlyStoppingTrainer(
         config=trainer_config,
         optimizer_config=optimizer_config,
         sockeye_model=sockeye_model,
-        training_model=training_model,
+        model_engine=model_engine,
         optimizer=optimizer,
-        zero_grad_kwargs=zero_grad_kwargs,
         loss_functions=losses,
         device=device,
-        using_amp=args.amp,
-        using_apex_amp=args.apex_amp,
         custom_metrics_logger=custom_metrics_logger,
         checkpoint_callback=checkpoint_callback)
 

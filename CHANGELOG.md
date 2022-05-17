@@ -11,6 +11,19 @@ Note that Sockeye has checks in place to not translate with an old model that wa
 
 Each version section may have subsections for: _Added_, _Changed_, _Removed_, _Deprecated_, and _Fixed_.
 
+## [3.1.9999]
+
+### TODO
+
+DeepSpeed mode support for:
+
+- Learning rate scheduler
+- AMP (args.amp)
+- Apex AMP (args.apex_amp)
+- Apex optimizers (FusedAdam, FusedSGD)
+- Update interval >1 (args.update_interval)
+- Gradient clipping (args.gradient_clipping_type, args.gradient_clipping_threshold)
+
 ## [3.1.14]
 
 ### Added
