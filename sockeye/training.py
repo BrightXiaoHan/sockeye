@@ -46,9 +46,9 @@ logger = logging.getLogger(__name__)
 
 class ModelEngine(torch.nn.Module):
     """
-    Wraps a SockeyeModel and its losses.
+    Wraps a SockeyeModel and its Losses.
     """
-    def __init__(self, model: model.SockeyeModel, losses: List[loss.Loss]) -> None:
+    def __init__(self, model: torch.nn.Module, losses: List[loss.Loss]) -> None:
         super().__init__()
         self.model = model
         self.losses = losses
@@ -61,10 +61,11 @@ class ModelEngine(torch.nn.Module):
                                                           Tuple[torch.Tensor],
                                                           Tuple[torch.Tensor]]:
         model_outputs = self.model(source, source_length, target, target_length)
-        loss_outputs = [loss_function(model_outputs, labels) for loss_function in self.losses]
+        loss_outputs = [loss_function(model_outputs, labels)
+                        for loss_function in self.losses]
         loss_values, num_samples = zip(*loss_outputs)
         sum_losses = sum(loss_values) if len(loss_values) > 1 else loss_values[0]
-        return sum_losses, loss_values, num_samples
+        return sum_losses, loss_values, num_samples  # type: ignore
 
 
 @dataclass
@@ -165,7 +166,7 @@ class EarlyStoppingTrainer:
                  config: TrainerConfig,
                  optimizer_config: optimizers.OptimizerConfig,
                  sockeye_model: model.SockeyeModel,
-                 model_engine: Callable,
+                 model_engine: torch.nn.Module,
                  optimizer: torch.optim.Optimizer,
                  lr_scheduler: Optional[lr_scheduler.LearningRateScheduler],
                  loss_functions: List[loss.Loss],
@@ -324,10 +325,11 @@ class EarlyStoppingTrainer:
         """
         batch = batch.load(device=self.device)
         # Forward/loss
-        sum_losses, loss_values, num_samples = self.model_engine(*batch.get_model_engine_inputs())
+        sum_losses, loss_values, num_samples = self.model_engine(batch.source, batch.source_length,
+                                                                 batch.target, batch.target_length, batch.labels)
         # Backward
         if utils.is_distributed():
-            self.model_engine.backward(sum_losses)
+            self.model_engine.backward(sum_losses)  # type: ignore
         else:
             sum_losses.backward()  # type: ignore
         return loss_values, num_samples
@@ -351,14 +353,14 @@ class EarlyStoppingTrainer:
 
         # Update weights and reset gradients
         if utils.is_distributed():
-            self.model_engine.step()
+            self.model_engine.step()  # type: ignore
         else:
             # Clip gradients
             if self.optimizer_config.gradient_clipping_type == C.GRADIENT_CLIPPING_TYPE_ABS:
-                torch.nn.utils.clip_grad.clip_grad_value_(self.training_model.parameters(),
+                torch.nn.utils.clip_grad.clip_grad_value_(self.sockeye_model.parameters(),
                                                           self.optimizer_config.gradient_clipping_threshold)
             elif self.optimizer_config.gradient_clipping_type == C.GRADIENT_CLIPPING_TYPE_NORM:
-                torch.nn.utils.clip_grad.clip_grad_norm_(self.training_model.parameters(),
+                torch.nn.utils.clip_grad.clip_grad_norm_(self.sockeye_model.parameters(),
                                                          self.optimizer_config.gradient_clipping_threshold)
             # Set learning rate for current step
             if self.lr_scheduler is not None:

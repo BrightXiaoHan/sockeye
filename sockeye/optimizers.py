@@ -13,7 +13,7 @@
 
 from dataclasses import dataclass
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Type
 
 import torch
 
@@ -43,19 +43,16 @@ class OptimizerConfig(config.Config):
     update_interval: int = 1
 
 
-def get_optimizer(model: torch.nn.Module, config: OptimizerConfig) -> torch.optim.Optimizer:
+def get_optimizer(config: OptimizerConfig) -> Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]:
     """
-    Create an optimizer for a Sockeye model using the specified config settings.
+    Get optimizer class and kwargs.
 
-    :param model: Sockeye model.
     :param config: Optimizer config.
-
-    :return: Optimizer.
+    :return: Tuple of Optimizer class and kwargs dictionary.
     """
     if config.name == C.OPTIMIZER_ADAM:
-        return torch.optim.Adam(model.parameters(), lr=config.lr, betas=config.betas, eps=config.eps,
-                                weight_decay=config.weight_decay)
+        return torch.optim.Adam, {'lr': config.lr, 'betas':config.betas, 'eps': config.eps,
+                                  'weight_decay': config.weight_decay}
     elif config.name == C.OPTIMIZER_SGD:
-        return torch.optim.SGD(model.parameters(), lr=config.lr, momentum=config.momentum,
-                               weight_decay=config.weight_decay)
+        return torch.optim.SGD, {'lr': config.lr, 'momentum': config.momentum, 'weight_decay': config.weight_decay}
     raise ValueError(f'Unknown optimizer: {config.name}')

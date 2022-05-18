@@ -24,9 +24,20 @@ DeepSpeed mode support for:
 - Update interval >1 (args.update_interval)
 - Gradient clipping (args.gradient_clipping_type, args.gradient_clipping_threshold)
 
+### Changed
+
+- Migrated training forward pass and losses to a DeepSpeed compatible model engine API.
+- Migrated learning rate schedulers to a PyTorch/DeepSpeed compatible API.
+- Refactored training code to support both single-process and DeepSpeed use cases.
+
+### Removed
+
+- Removed unused `sockeye-train` option `--learning-rate-t-scale`.
+
 ## [3.1.14]
 
 ### Added
+
 - Added the implementation of Neural vocabulary selection to Sockeye as presented in our NAACL 2022 paper "The Devil is in the Details: On the Pitfalls of Vocabulary Selection in Neural Machine Translation" (Tobias Domhan, Eva Hasler, Ke Tran, Sony Trenous, Bill Byrne and Felix Hieber).
   - To use NVS simply specify `--neural-vocab-selection` to `sockeye-train`. This will train a model with Neural Vocabulary Selection that is automatically used by `sockeye-translate`. If you want look at translations without vocabulary selection specify `--skip-nvs` as an argument to `sockeye-translate`.
 

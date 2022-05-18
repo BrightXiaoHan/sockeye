@@ -996,41 +996,46 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
                                          fixed_param_strategy=args.fixed_param_strategy)
     utils.log_parameters(sockeye_model)
 
-    losses = create_losses(args, all_num_classes=target_vocab_sizes)
-    model_engine = training.ModelEngine(model=sockeye_model, losses=losses)
-
-    logger.info('Tracing model engine on a validation batch')
+    logger.info('Tracing model on a validation batch')
     batch = eval_iter.next().load(device=device)  # pylint: disable=not-callable
-    model_engine = torch.jit.trace(model_engine, batch.get_model_engine_inputs(), strict=False, check_trace=False)
+    traced_model = torch.jit.trace(sockeye_model, (batch.source, batch.source_length, batch.target, batch.target_length), strict=False)
     eval_iter.reset()
+
+    losses = create_losses(args, all_num_classes=target_vocab_sizes)
+    model_engine = training.ModelEngine(model=traced_model, losses=losses)
+
+    # Get class and kwargs for initializing optimizer and learning rate
+    # scheduler. Actual initialization is handled differently for single-process
+    # and distributed training.
+    optimizer_class, optimizer_kwargs = optimizers.get_optimizer(optimizer_config)
+    lr_scheduler_class, lr_scheduler_kwargs = lr_scheduler.get_lr_scheduler(args.learning_rate_scheduler_type,
+                                                                            args.initial_learning_rate,
+                                                                            args.learning_rate_reduce_factor,
+                                                                            args.learning_rate_reduce_num_not_improved,
+                                                                            args.learning_rate_warmup,
+                                                                            args.max_updates)
+    _lr_scheduler = None
 
     if utils.is_distributed():
         ds_config = {
             'train_micro_batch_size_per_gpu': args.batch_size,
             'gradient_accumulation_steps': args.update_interval,
             'optimizer': {
-                'type': 'Adam',
-                'params': {
-                    'lr': args.initial_learning_rate,
-                    'betas': args.optimizer_betas,
-                    'eps': args.optimizer_eps,
-                },
+                'type': optimizer_class.__name__,
+                'params': optimizer_kwargs,
             },
+            'scheduler': {
+                'params': lr_scheduler_kwargs,
+            }
         }
         model_engine, optimizer, _, _ = deepspeed.initialize(model=model_engine,
                                                              model_parameters=sockeye_model.parameters(),
-                                                             lr_scheduler=TODO,
+                                                             lr_scheduler=lr_scheduler_class,
                                                              config=ds_config)
-        _lr_scheduler = None
     else:
-        optimizer = optimizers.get_optimizer(sockeye_model, optimizer_config)
-        _lr_scheduler = lr_scheduler.get_lr_scheduler(optimizer,
-                                                      args.learning_rate_scheduler_type,
-                                                      args.initial_learning_rate,
-                                                      args.learning_rate_reduce_factor,
-                                                      args.learning_rate_reduce_num_not_improved,
-                                                      args.learning_rate_warmup,
-                                                      args.max_updates)
+        optimizer = optimizer_class(sockeye_model.parameters(), **optimizer_kwargs)
+        if lr_scheduler_class is not None:
+            _lr_scheduler = lr_scheduler_class(optimizer, **lr_scheduler_kwargs)
 
     trainer = training.EarlyStoppingTrainer(
         config=trainer_config,
