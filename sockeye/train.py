@@ -756,14 +756,6 @@ def create_optimizer_config(args: argparse.Namespace) -> optimizers.OptimizerCon
     else:
         gradient_clipping_type = args.gradient_clipping_type
 
-    lr_sched = lr_scheduler.get_lr_scheduler(args.learning_rate_scheduler_type,
-                                             args.initial_learning_rate,
-                                             args.learning_rate_t_scale,
-                                             args.learning_rate_reduce_factor,
-                                             args.learning_rate_reduce_num_not_improved,
-                                             args.learning_rate_warmup,
-                                             args.max_updates)
-
     config = optimizers.OptimizerConfig(name=args.optimizer,
                                         lr=args.initial_learning_rate,
                                         betas=args.optimizer_betas,
@@ -771,8 +763,7 @@ def create_optimizer_config(args: argparse.Namespace) -> optimizers.OptimizerCon
                                         weight_decay=args.weight_decay,
                                         momentum=args.momentum,
                                         gradient_clipping_type=gradient_clipping_type,
-                                        gradient_clipping_threshold=gradient_clipping_threshold,
-                                        lr_scheduler=lr_sched)
+                                        gradient_clipping_threshold=gradient_clipping_threshold)
 
     num_workers = 1 if not utils.is_distributed() else torch.distributed.get_world_size()
     effective_batch_size = args.batch_size * args.update_interval * num_workers
@@ -1028,10 +1019,18 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
         }
         model_engine, optimizer, _, _ = deepspeed.initialize(model=model_engine,
                                                              model_parameters=sockeye_model.parameters(),
-                                                             lr_scheduler=lambda _: optimizer_config.lr_scheduler,
+                                                             lr_scheduler=TODO,
                                                              config=ds_config)
+        _lr_scheduler = None
     else:
         optimizer = optimizers.get_optimizer(sockeye_model, optimizer_config)
+        _lr_scheduler = lr_scheduler.get_lr_scheduler(optimizer,
+                                                      args.learning_rate_scheduler_type,
+                                                      args.initial_learning_rate,
+                                                      args.learning_rate_reduce_factor,
+                                                      args.learning_rate_reduce_num_not_improved,
+                                                      args.learning_rate_warmup,
+                                                      args.max_updates)
 
     trainer = training.EarlyStoppingTrainer(
         config=trainer_config,
@@ -1039,6 +1038,7 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
         sockeye_model=sockeye_model,
         model_engine=model_engine,
         optimizer=optimizer,
+        lr_scheduler=_lr_scheduler,
         loss_functions=losses,
         device=device,
         custom_metrics_logger=custom_metrics_logger,
