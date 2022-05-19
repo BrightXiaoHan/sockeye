@@ -44,7 +44,7 @@ from .config import Config
 logger = logging.getLogger(__name__)
 
 
-class ModelEngine(torch.nn.Module):
+class ModelWithLoss(torch.nn.Module):
     """
     Wraps a SockeyeModel and its Losses.
     """
@@ -166,7 +166,7 @@ class EarlyStoppingTrainer:
                  config: TrainerConfig,
                  optimizer_config: optimizers.OptimizerConfig,
                  sockeye_model: model.SockeyeModel,
-                 model_engine: torch.nn.Module,
+                 model_object: Callable,
                  optimizer: torch.optim.Optimizer,
                  lr_scheduler: Optional[lr_scheduler.LearningRateScheduler],
                  loss_functions: List[loss.Loss],
@@ -176,7 +176,7 @@ class EarlyStoppingTrainer:
         self.config = config
         self.optimizer_config = optimizer_config
         self.sockeye_model = sockeye_model
-        self.model_engine = model_engine
+        self.model_object = model_object
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
         self.loss_functions = loss_functions
@@ -325,11 +325,11 @@ class EarlyStoppingTrainer:
         """
         batch = batch.load(device=self.device)
         # Forward/loss
-        sum_losses, loss_values, num_samples = self.model_engine(batch.source, batch.source_length,
+        sum_losses, loss_values, num_samples = self.model_object(batch.source, batch.source_length,
                                                                  batch.target, batch.target_length, batch.labels)
         # Backward
         if utils.is_distributed():
-            self.model_engine.backward(sum_losses)  # type: ignore
+            self.model_object.backward(sum_losses)  # type: ignore
         else:
             sum_losses.backward()  # type: ignore
         return loss_values, num_samples
@@ -344,16 +344,9 @@ class EarlyStoppingTrainer:
         for loss_func, loss_value, num_samples in zip(self.loss_functions, loss_values, num_samples):
             loss_func.metric.update(loss_value.item(), num_samples.item())
 
-        # We accumulate gradients over N=update_interval batches before running
-        # the optimizer to update model weights. Every Nth batch is an update
-        # batch.
-        did_grad_step = self.state.batches % self.config.update_interval == 0
-        if did_grad_step:
-            self.state.updates += 1
-
         # Update weights and reset gradients
         if utils.is_distributed():
-            self.model_engine.step()  # type: ignore
+            self.model_object.step()  # type: ignore
         else:
             # Clip gradients
             if self.optimizer_config.gradient_clipping_type == C.GRADIENT_CLIPPING_TYPE_ABS:
@@ -368,8 +361,14 @@ class EarlyStoppingTrainer:
             self.optimizer.step()
             self.optimizer.zero_grad(set_to_none=True)
 
+        # We accumulate gradients over N=update_interval batches for each update
+        did_grad_step = self.state.batches % self.config.update_interval == 0
+        if did_grad_step:
+            self.state.updates += 1
+
         self._speedometer(self.state.epoch, self.state.batches,
                           self.state.updates, batch.samples, batch.tokens, (lf.metric for lf in self.loss_functions))
+
         return did_grad_step
 
     def _evaluate(self, checkpoint: int, data_iter,

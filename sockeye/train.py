@@ -27,7 +27,6 @@ import sys
 import tempfile
 from typing import cast, Callable, Optional, Dict, List, Tuple
 
-import deepspeed
 import torch
 import torch.distributed
 import torch.distributed.elastic.multiprocessing.errors
@@ -131,6 +130,11 @@ def check_arg_compatibility(args: argparse.Namespace):
     if args.dtype != C.DTYPE_FP32:
         logger.warning('Specifying a non-float32 dtype to sockeye.train has no effect. Use --amp or --apex-amp for '
                        'mixed precision training.')
+
+    if not args.dist:
+        check_condition(not args.amp and not args.apex_amp and args.update_interval == 1,
+                        'The following features require running in distributed mode (--dist): --amp, --apex-amp, '
+                        '--update-interval N>1')
 
 
 def check_resume(args: argparse.Namespace, output_folder: str) -> bool:
@@ -861,6 +865,11 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
     """
 
     if args.dist:
+        try:
+            import deepspeed
+        except ImportError:
+            raise RuntimeError('Install DeepSpeed (https://www.deepspeed.ai/) to run distributed training: '
+                               '`pip install deepspeed`')
         deepspeed.init_distributed(dist_backend='gloo' if args.use_cpu else 'nccl')
 
     if args.dry_run:
@@ -1002,7 +1011,7 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
     eval_iter.reset()
 
     losses = create_losses(args, all_num_classes=target_vocab_sizes)
-    model_engine = training.ModelEngine(model=traced_model, losses=losses)
+    model_object = training.ModelWithLoss(model=traced_model, losses=losses)
 
     # Get class and kwargs for initializing optimizer and learning rate
     # scheduler. Actual initialization is handled differently for single-process
@@ -1026,9 +1035,15 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
             },
             'scheduler': {
                 'params': lr_scheduler_kwargs,
-            }
+            },
         }
-        model_engine, optimizer, _, _ = deepspeed.initialize(model=model_engine,
+        if args.amp:
+            ds_config['fp16'] = {'enabled': True}
+        if args.apex_amp:
+            raise RuntimeError('Not supported: --apex-amp')
+        if optimizer_config.gradient_clipping_type != C.GRADIENT_CLIPPING_TYPE_NONE:
+            ds_config['gradient_clipping'] = optimizer_config.gradient_clipping_threshold
+        model_object, optimizer, _, _ = deepspeed.initialize(model=model_object,
                                                              model_parameters=sockeye_model.parameters(),
                                                              lr_scheduler=lr_scheduler_class,
                                                              config=ds_config)
@@ -1041,7 +1056,7 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
         config=trainer_config,
         optimizer_config=optimizer_config,
         sockeye_model=sockeye_model,
-        model_engine=model_engine,
+        model_object=model_object,
         optimizer=optimizer,
         lr_scheduler=_lr_scheduler,
         loss_functions=losses,

@@ -26,8 +26,8 @@ DeepSpeed mode support for:
 
 ### Changed
 
-- Migrated training forward pass and losses to a DeepSpeed compatible model engine API.
-- Migrated learning rate schedulers to a PyTorch/DeepSpeed compatible API.
+- Migrated training forward pass and losses to an API compatible with DeepSpeed.
+- Migrated learning rate schedulers to an API compatible with PyTorch/DeepSpeed.
 - Refactored training code to support both single-process and DeepSpeed use cases.
 
 ### Removed
