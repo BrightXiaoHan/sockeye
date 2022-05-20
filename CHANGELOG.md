@@ -13,17 +13,6 @@ Each version section may have subsections for: _Added_, _Changed_, _Removed_, _D
 
 ## [3.1.9999]
 
-### TODO
-
-DeepSpeed mode support for:
-
-- Learning rate scheduler
-- AMP (args.amp)
-- Apex AMP (args.apex_amp)
-- Apex optimizers (FusedAdam, FusedSGD)
-- Update interval >1 (args.update_interval)
-- Gradient clipping (args.gradient_clipping_type, args.gradient_clipping_threshold)
-
 ### Changed
 
 - Migrated training forward pass and losses to an API compatible with DeepSpeed.

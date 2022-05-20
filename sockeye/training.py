@@ -48,9 +48,10 @@ class ModelWithLoss(torch.nn.Module):
     """
     Wraps a SockeyeModel and its Losses.
     """
-    def __init__(self, model: torch.nn.Module, losses: List[loss.Loss]) -> None:
+    def __init__(self, model: model.SockeyeModel, losses: List[loss.Loss]) -> None:
         super().__init__()
         self.model = model
+        self.traced_model = None  # type: Optional[torch.jit.ScriptModule]
         self.losses = losses
 
     def forward(self, source: torch.Tensor,
@@ -60,6 +61,10 @@ class ModelWithLoss(torch.nn.Module):
                 labels: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor,
                                                           Tuple[torch.Tensor],
                                                           Tuple[torch.Tensor]]:
+        if self.traced_model is None:
+            logger.debug('Tracing SockeyeModel')
+            self.traced_model = torch.jit.trace(self.model, (source, source_length,
+                                                             target, target_length), strict=False)
         model_outputs = self.model(source, source_length, target, target_length)
         loss_outputs = [loss_function(model_outputs, labels)
                         for loss_function in self.losses]

@@ -990,6 +990,8 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
     sockeye_model = model.SockeyeModel(
         model_config,
         train_decoder_only=args.fixed_param_strategy == C.FIXED_PARAM_STRATEGY_ALL_EXCEPT_DECODER)
+    if not utils.is_distributed():
+        sockeye_model.to(device)
     sockeye_model.apply(model.initialize_parameters)
 
     # Load starting parameters if specified
@@ -1005,25 +1007,19 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
                                          fixed_param_strategy=args.fixed_param_strategy)
     utils.log_parameters(sockeye_model)
 
-    logger.info('Tracing model on a validation batch')
-    batch = eval_iter.next().load(device=device)  # pylint: disable=not-callable
-    traced_model = torch.jit.trace(sockeye_model, (batch.source, batch.source_length, batch.target, batch.target_length), strict=False)
-    eval_iter.reset()
-
     losses = create_losses(args, all_num_classes=target_vocab_sizes)
-    model_object = training.ModelWithLoss(model=traced_model, losses=losses)
+    model_object = training.ModelWithLoss(model=sockeye_model, losses=losses)
 
-    # Get class and kwargs for initializing optimizer and learning rate
-    # scheduler. Actual initialization is handled differently for single-process
-    # and distributed training.
     optimizer_class, optimizer_kwargs = optimizers.get_optimizer(optimizer_config)
+    optimizer = None if utils.is_distributed() else optimizer_class(sockeye_model.parameters(), **optimizer_kwargs)
+
     lr_scheduler_class, lr_scheduler_kwargs = lr_scheduler.get_lr_scheduler(args.learning_rate_scheduler_type,
                                                                             args.initial_learning_rate,
                                                                             args.learning_rate_reduce_factor,
                                                                             args.learning_rate_reduce_num_not_improved,
                                                                             args.learning_rate_warmup,
                                                                             args.max_updates)
-    _lr_scheduler = None
+    _lr_scheduler = lr_scheduler_class(optimizer, **lr_scheduler_kwargs) if lr_scheduler_class is not None else None
 
     if utils.is_distributed():
         ds_config = {
@@ -1033,24 +1029,18 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
                 'type': optimizer_class.__name__,
                 'params': optimizer_kwargs,
             },
-            'scheduler': {
-                'params': lr_scheduler_kwargs,
-            },
+            'steps_per_print': args.update_interval * args.checkpoint_interval,
         }
         if args.amp:
             ds_config['fp16'] = {'enabled': True}
         if args.apex_amp:
-            raise RuntimeError('Not supported: --apex-amp')
+            raise NotImplementedError('Not currently supported: --apex-amp')
         if optimizer_config.gradient_clipping_type != C.GRADIENT_CLIPPING_TYPE_NONE:
             ds_config['gradient_clipping'] = optimizer_config.gradient_clipping_threshold
         model_object, optimizer, _, _ = deepspeed.initialize(model=model_object,
                                                              model_parameters=sockeye_model.parameters(),
-                                                             lr_scheduler=lr_scheduler_class,
+                                                             lr_scheduler=_lr_scheduler,
                                                              config=ds_config)
-    else:
-        optimizer = optimizer_class(sockeye_model.parameters(), **optimizer_kwargs)
-        if lr_scheduler_class is not None:
-            _lr_scheduler = lr_scheduler_class(optimizer, **lr_scheduler_kwargs)
 
     trainer = training.EarlyStoppingTrainer(
         config=trainer_config,

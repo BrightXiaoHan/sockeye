@@ -29,18 +29,31 @@ class LearningRateScheduler:
     optimizer instance using an API that is compatible with PyTorch and
     DeepSpeed.
 
-    :param optimizer: Optimizer.
+    :param optimizer: Optimizer. If None, `LearningRateScheduler(optimizer)`
+                      must be called before running `step()`.
     :param base_lr: Base learning rate.
     :param warmup: Number of initial updates during which the learning rate
                    linearly increases.
     """
-    def __init__(self, optimizer: torch.optim.Optimizer, base_lr: float = 1.0, warmup: int = 0) -> None:
+    def __init__(self,
+                 optimizer: Optional[torch.optim.Optimizer] = None,
+                 base_lr: float = 1.0,
+                 warmup: int = 0) -> None:
         self.optimizer = optimizer
         self.base_lr = base_lr
         check_condition(warmup >= 0, "warmup needs to be >= 0.")
         self.warmup = warmup
         self._t = 0
         self._last_lr = None  # type: Optional[List[float]]
+
+    def __call__(self, optimizer: torch.optim.Optimizer) -> 'LearningRateScheduler':
+        """
+        DeepSpeed compatibility method: associate otherwise initialized learning
+        rate scheduler with an optimizer.
+        """
+        assert self.optimizer is None, 'This learning rate scheduler is already associated with an optimizer.'
+        self.optimizer = optimizer
+        return self
 
     def __repr__(self) -> str:
         return self.__class__.__name__
@@ -72,6 +85,7 @@ class LearningRateScheduler:
         :param t: Manually specify the time step instead of automatically
                   incrementing the previous value.
         """
+        assert self.optimizer is not None, 'This learning rate scheduler is not associated with an optimizer.'
         if t is None:
             t = self._t + 1
         self._t = t
